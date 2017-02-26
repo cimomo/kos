@@ -1,6 +1,6 @@
 # Kai's Operating System
 
-&copy; Kai Chen <kaichen@outlook.com>
+&copy; Kai Chen
 
 K-OS (Kai's Operating System) is designed and implemented by Kai Chen
 for CS134c term project at California Institute of Technology.
