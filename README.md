@@ -12,4 +12,4 @@ A copy of the license is at: /kos/LICENSE
 For more information, please visit: http://www.gnu.org/copyleft/gpl.html
 
 If you have any question or concerns about this project, please contact
-the author at: kaichen@outlook.com
+the author at: https://github.com/cimomo
