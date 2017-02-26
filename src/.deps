@@ -1,0 +1,22 @@
+# DO NOT DELETE
+
+kernel/console.o: include/console.h include/kio.h include/vdesktop.h
+kernel/console.o: include/kbd.h include/kstring.h include/util.h
+kernel/console.o: include/login.h include/kernel.h
+kernel/hello.o: include/kio.h
+kernel/isr.o: include/isr.h include/kio.h include/kbd.h include/port.h
+kernel/isr.o: include/util.h include/vdesktop.h include/kstring.h
+kernel/isr.o: include/sched.h
+kernel/kbd.o: include/port.h include/kio.h include/kbd.h include/util.h
+kernel/kernel.o: include/kio.h include/isr.h include/kbd.h include/mm.h
+kernel/kernel.o: include/vdesktop.h include/console.h include/login.h
+kernel/kernel.o: include/kernel.h include/sched.h
+kernel/kio.o: include/kio.h include/port.h include/util.h
+kernel/kstring.o: include/kstring.h
+kernel/login.o: include/login.h include/kernel.h include/kio.h include/mm.h
+kernel/login.o: include/kstring.h include/vdesktop.h include/kbd.h
+kernel/login.o: include/console.h include/sched.h
+kernel/sched.o: include/sched.h include/util.h include/kio.h include/mm.h
+kernel/vdesktop.o: include/kio.h include/vdesktop.h include/mm.h
+mm/mm.o: include/util.h include/mm.h include/kio.h
+mm/paging.o: include/util.h include/mm.h include/kio.h

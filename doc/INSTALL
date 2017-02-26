@@ -1,0 +1,22 @@
+INSTALL - Installing K-OS
+(C) 2003 Kai Chen, <kchen@cs.caltech.edu>
+
+
+1. Download kos.tz from www.cs.caltech.edu/~kchen/kos
+
+2. Unfold the tarball: 
+      tar zxvf kos.tz
+
+3. Go to directory kos/: 
+      cd kos
+
+4. Compile the source code: 
+      make
+
+5. Insert a floppy to make a boot disk:
+      make install
+
+6. Boot the machine from floppy and enjoy!
+
+     
+

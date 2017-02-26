@@ -1,0 +1,14 @@
+File: README
+(C) 2003, Kai Chen <kchen@cs.caltech.edu>
+
+K-OS (Kai's Operating System) is designed and implemented by Kai Chen
+for CS134c term project at California Institute of Technology.
+Source code, documentation, boot image, and other related material can
+be found at http://www.cs.caltech.edu/~kchen/kos.
+
+This software is registered under the GNU General Public License. 
+A copy of the license is at: /kos/doc/LICENSE
+For more information, please visit: http://www.gnu.org/copyleft/gpl.html
+
+If you have any question or concerns about this project, please contact
+the author at: kchen@cs.caltech.edu

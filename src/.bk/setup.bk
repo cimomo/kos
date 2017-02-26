@@ -1,0 +1,1216 @@
+;;
+;; setup.s: Entry of kernel. And sets up IRQ
+;;
+;; ------------------------------------------------------------------
+;;
+;; @begin[license]
+;; Copyright (C) 2003  Kai Chen, Caltech
+;;
+;; This program is free software; you can redistribute it and/or
+;; modify it under the terms of the GNU General Public License
+;; as published by the Free Software Foundation; either version 2
+;; of the License, or (at your option) any later version.
+;;
+;; This program is distributed in the hope that it will be useful,
+;; but WITHOUT ANY WARRANTY; without even the implied warranty of
+;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;; GNU General Public License for more details.
+;;
+;; You should have received a copy of the GNU General Public License
+;; along with this program; if not, write to the Free Software
+;; Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+;;
+;; @author: Kai Chen
+;; @email{kchen@cs.caltech.edu}
+;; @end[license]
+;;
+;;
+
+[BITS 32]
+
+[GLOBAL _start]
+[EXTERN _k_main]
+[EXTERN blue_screen]
+[EXTERN kbd_isr]
+[EXTERN tss0]
+[EXTERN _set_tss_desc]
+
+;;  Protected mode segment selectors
+NULL_SEL            EQU         0x0
+CODE_SEL            EQU         0x8
+DATA_SEL            EQU         0x10
+TSS0_SEL            EQU         0x18
+
+
+;;  Address for stack
+STACK_ADDR          EQU         0xFFFF
+
+
+;;  IDT register value
+IDT_BASE            EQU         0x2000
+IDT_SIZE            EQU         0x800
+IDT_ENTRIES         EQU         0x100
+BYTES_IDT_ENTRY     EQU         0x8
+
+
+;;  IRQ 0 is remapped to 0x20
+IDT_TIMER           EQU         0x20
+IDT_KEYBOARD        EQU         0x21
+
+
+;;  IDT entry value. IRQ present, ring 0
+PRESENT_RING0       EQU         0x8E00
+
+
+;;  EOI message
+EOI                 EQU         0x20
+
+
+;;  PIC relavent
+PIC_MASTER_CODE     EQU         0x20
+PIC_MASTER_DATA     EQU         0x21
+PIC_SLAVE_CODE      EQU         0xA0
+PIC_SLAVE_DATA      EQU         0xA1
+
+
+;;  Interrupt Command Words
+
+;;  ICW4 is expected, cascaded PIC
+PIC_MASTER_ICW1     EQU         00010001B
+PIC_SLAVE_ICW1      EQU         00010001B
+
+;;  PIC1 mapped to 0x20, PIC2 mapped to 0x28
+PIC_MASTER_ICW2     EQU         0x20
+PIC_SLAVE_ICW2      EQU         0x28
+
+;;  Slave PIC connected to IR2
+PIC_MASTER_ICW3     EQU         00000100B
+PIC_SLAVE_ICW3      EQU         00000010B
+
+;;  EOI is needed
+PIC_MASTER_ICW4     EQU         00000001B
+PIC_SLAVE_ICW4      EQU         00000001B
+
+;;  Disable all iterrupts except for timer and keyboard IRQ
+PIC_MASTER_OCW1     EQU         11111100B
+PIC_SLAVE_OCW1      EQU         11111111B
+
+
+;;  TSS 0 Specifics
+
+PAGE_DIR_ADDR       EQU         0x70000
+
+GDT_TSS0_INDEX      EQU         3
+
+TSS_CR3_OFF         EQU         0x1C
+TSS_EIP_OFF         EQU         0x20
+TSS_EFLAGS_OFF      EQU         0x24
+TSS_ESP_OFF         EQU         0x38
+TSS_EBP_OFF         EQU         0x3C
+TSS_ES_OFF          EQU         0x48
+TSS_CS_OFF          EQU         0x4C
+TSS_SS_OFF          EQU         0x50
+TSS_DS_OFF          EQU         0x54
+TSS_FS_OFF          EQU         0x58
+TSS_GS_OFF          EQU         0x5C
+TSS_TFLAG_OFF       EQU         0x64
+
+TSS_INIT_TFLAG      EQU         0
+
+
+[SEGMENT .text]
+_start:
+
+    MOV             AX, DATA_SEL
+    MOV             DS, AX
+    MOV             ES, AX
+    MOV             FS, AX
+    MOV             GS, AX
+
+    MOV             SS, AX
+    MOV             ESP, STACK_ADDR
+    MOV             EBP, STACK_ADDR
+
+    ;CLI
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;  Initialize IDT                                                           ;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+    
+;;  Install handlers
+
+;;  Default handler
+    MOV             EAX, defaultISR
+    MOV             [defaultIRQ.offset_low], AX
+    SHR             EAX, 16
+    MOV             [defaultIRQ.offset_high], AX
+    
+;;  Timer interrupt handler
+    MOV             EAX, timerISR
+    MOV             [timerIRQ.offset_low], AX
+    SHR             EAX, 16
+    MOV             [timerIRQ.offset_high], AX
+
+;;  Keyboard interrupt handler
+    MOV             EAX, keyboardISR
+    MOV             [keyboardIRQ.offset_low], AX
+    SHR             EAX, 16
+    MOV             [keyboardIRQ.offset_high], AX
+
+
+;;  Populate the IDT entries
+
+    PUSHFD
+    CLD
+
+;;  First fill in all entries with default handler
+    MOV             EDI, IDT_BASE
+    MOV             ECX, IDT_ENTRIES
+populate_loop:
+    MOV             ESI, defaultIRQ
+    MOVSD
+    MOVSD
+    LOOP            populate_loop
+
+;;  Now install the timer IRQ descriptor
+    MOV             EDI, IDT_BASE+IDT_TIMER*BYTES_IDT_ENTRY
+    MOV             ESI, timerIRQ
+    MOVSD
+    MOVSD
+
+;;  install the keyboard IRQ descriptor
+    MOV             EDI, IDT_BASE+IDT_KEYBOARD*BYTES_IDT_ENTRY
+    MOV             ESI, keyboardIRQ
+    MOVSD
+    MOVSD
+
+
+    POPFD
+
+
+;;  Finally, load IDT
+    LIDT            [idtr]
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;  Remap PIC                                                                ;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;  Send ICW1
+    MOV             AL, PIC_MASTER_ICW1
+    OUT             PIC_MASTER_CODE, AL
+    MOV             AL, PIC_SLAVE_ICW1
+    OUT             PIC_SLAVE_CODE, AL
+
+;;  Send ICW2
+    MOV             AL, PIC_MASTER_ICW2
+    OUT             PIC_MASTER_DATA, AL
+    MOV             AL, PIC_SLAVE_ICW2
+    OUT             PIC_SLAVE_DATA, AL
+
+;;  Send ICW3
+    MOV             AL, PIC_MASTER_ICW3
+    OUT             PIC_MASTER_DATA, AL
+    MOV             AL, PIC_SLAVE_ICW3
+    OUT             PIC_SLAVE_DATA, AL
+
+;;  Send ICW4
+    MOV             AL, PIC_MASTER_ICW4
+    OUT             PIC_MASTER_DATA, AL
+    MOV             AL, PIC_SLAVE_ICW4
+    OUT             PIC_SLAVE_DATA, AL
+
+;;  Send OCW1
+    MOV             AL, PIC_MASTER_OCW1
+    OUT             PIC_MASTER_DATA, AL
+    MOV             AL, PIC_SLAVE_OCW1
+    OUT             PIC_SLAVE_DATA, AL
+
+;;  Signal EOI
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;  Set up TSS 0                                                             ;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+    MOV dword       [tss0+TSS_EIP_OFF], kernel_entry
+    PUSHFD
+    POP dword       EAX
+    MOV dword       [tss0+TSS_EFLAGS_OFF], EAX
+    MOV dword       [tss0+TSS_ESP_OFF], STACK_ADDR
+    MOV dword       [tss0+TSS_EBP_OFF], STACK_ADDR
+    MOV word        [tss0+TSS_ES_OFF], DATA_SEL
+    MOV word        [tss0+TSS_CS_OFF], CODE_SEL
+    MOV word        [tss0+TSS_SS_OFF], DATA_SEL
+    MOV word        [tss0+TSS_DS_OFF], DATA_SEL
+    MOV word        [tss0+TSS_FS_OFF], DATA_SEL
+    MOV word        [tss0+TSS_GS_OFF], DATA_SEL
+    MOV word        [tss0+TSS_TFLAG_OFF], TSS_INIT_TFLAG
+
+    PUSH dword      GDT_TSS0_INDEX
+    PUSH dword      tss0
+    CALL            _set_tss_desc
+    ADD             ESP, 8
+
+    MOV             AX, TSS0_SEL
+    LTR             AX
+
+    PUSH dword      [tss0+TSS_EFLAGS_OFF]
+    PUSH dword      [tss0+TSS_CS_OFF]
+    PUSH dword      [tss0+TSS_EIP_OFF]
+
+    IRETD
+    
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;  Launch the kernel                                                        ;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+kernel_entry:
+    STI
+
+
+    NOP
+    NOP
+    NOP
+
+
+    CALL            _k_main
+
+forever:
+    JMP             forever
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;  Interrupt Service Routines. Assembly wrapper.                            ;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+[GLOBAL defaultISR]
+defaultISR:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+    
+    PUSH dword      -1
+    CALL            blue_screen
+;    HLT
+
+    ADD             ESP, 4
+    MOV             AL, EOI             ; signal EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+    
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+    POPAD
+
+    IRET
+    
+[GLOBAL timerISR]
+timerISR:
+    PUSHAD
+    MOV             AL, EOI             ; signal EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+    POPAD
+    IRET
+
+[GLOBAL keyboardISR]
+keyboardISR:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    CALL            kbd_isr
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+    POPAD
+
+    IRET
+
+
+;;  Now some other handlers so that we know which interrupt we get.
+[GLOBAL INT00Handler]
+INT00Handler:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    PUSH dword      0
+
+    CALL            blue_screen
+
+    ADD             ESP, 4
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+
+    IRET
+
+
+[GLOBAL INT01Handler]
+INT01Handler:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    PUSH dword      1
+
+    CALL            blue_screen
+
+    ADD             ESP, 4
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+
+    IRET
+
+
+[GLOBAL INT02Handler]
+INT02Handler:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    PUSH dword      2
+
+    CALL            blue_screen
+
+    ADD             ESP, 4
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+
+    IRET
+
+
+[GLOBAL INT03Handler]
+INT03Handler:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    PUSH dword      3
+
+    CALL            blue_screen
+
+    ADD             ESP, 4
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+
+    IRET
+
+
+[GLOBAL INT04Handler]
+INT04Handler:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    PUSH dword      4
+
+    CALL            blue_screen
+
+    ADD             ESP, 4
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+
+    IRET
+
+
+[GLOBAL INT05Handler]
+INT05Handler:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    PUSH dword      5
+
+    CALL            blue_screen
+
+    ADD             ESP, 4
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+
+    IRET
+
+
+[GLOBAL INT06Handler]
+INT06Handler:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    PUSH dword      6
+
+    CALL            blue_screen
+
+    ADD             ESP, 4
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+
+    IRET
+
+
+[GLOBAL INT07Handler]
+INT07Handler:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    PUSH dword      7
+
+    CALL            blue_screen
+
+    ADD             ESP, 4
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+
+    IRET
+
+
+[GLOBAL INT08Handler]
+INT08Handler:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    PUSH dword      8
+
+    CALL            blue_screen
+
+    ADD             ESP, 4
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+
+    IRET
+
+
+[GLOBAL INT09Handler]
+INT09Handler:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    PUSH dword      9
+
+    CALL            blue_screen
+
+    ADD             ESP, 4
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+
+    IRET
+
+
+[GLOBAL INT10Handler]
+INT10Handler:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    PUSH dword      10
+
+    CALL            blue_screen
+
+    ADD             ESP, 4
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+
+    IRET
+
+
+[GLOBAL INT11Handler]
+INT11Handler:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    PUSH dword      11
+
+    CALL            blue_screen
+
+    ADD             ESP, 4
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+
+    IRET
+
+
+[GLOBAL INT12Handler]
+INT12Handler:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    PUSH dword      12
+
+    CALL            blue_screen
+
+    ADD             ESP, 4
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+
+    IRET
+
+
+[GLOBAL INT13Handler]
+INT13Handler:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    PUSH dword      13
+
+    CALL            blue_screen
+
+    ADD             ESP, 4
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+
+    IRET
+
+
+[GLOBAL INT14Handler]
+INT14Handler:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    PUSH dword      14
+
+    CALL            blue_screen
+
+    ADD             ESP, 4
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+
+    IRET
+
+
+[GLOBAL INT15Handler]
+INT15Handler:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    PUSH dword      15
+
+    CALL            blue_screen
+
+    ADD             ESP, 4
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+
+    IRET
+
+
+[GLOBAL INT16Handler]
+INT16Handler:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    PUSH dword      16
+
+    CALL            blue_screen
+
+    ADD             ESP, 4
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+
+    IRET
+
+
+[GLOBAL INT17Handler]
+INT17Handler:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    PUSH dword      17
+
+    CALL            blue_screen
+
+    ADD             ESP, 4
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+
+    IRET
+
+
+[GLOBAL INT18Handler]
+INT18Handler:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    PUSH dword      18
+
+    CALL            blue_screen
+
+    ADD             ESP, 4
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+
+    IRET
+
+
+[GLOBAL INT19Handler]
+INT19Handler:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    PUSH dword      19
+
+    CALL            blue_screen
+
+    ADD             ESP, 4
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+
+    IRET
+
+
+[GLOBAL INT20Handler]
+INT20Handler:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    PUSH dword      20
+
+    CALL            blue_screen
+
+    ADD             ESP, 4
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+
+    IRET
+
+
+[GLOBAL INT21Handler]
+INT21Handler:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    PUSH dword      21
+
+    CALL            blue_screen
+
+    ADD             ESP, 4
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+
+    IRET
+
+
+[GLOBAL INT22Handler]
+INT22Handler:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    PUSH dword      22
+
+    CALL            blue_screen
+
+    ADD             ESP, 4
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+
+    IRET
+
+
+[GLOBAL INT23Handler]
+INT23Handler:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    PUSH dword      23
+
+    CALL            blue_screen
+
+    ADD             ESP, 4
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+
+    IRET
+
+
+[GLOBAL INT24Handler]
+INT24Handler:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    PUSH dword      24
+
+    CALL            blue_screen
+
+    ADD             ESP, 4
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+
+    IRET
+
+
+[GLOBAL INT25Handler]
+INT25Handler:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    PUSH dword      25
+
+    CALL            blue_screen
+
+    ADD             ESP, 4
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+
+    IRET
+
+
+[GLOBAL INT26Handler]
+INT26Handler:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    PUSH dword      26
+
+    CALL            blue_screen
+
+    ADD             ESP, 4
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+
+    IRET
+
+
+[GLOBAL INT27Handler]
+INT27Handler:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    PUSH dword      27
+
+    CALL            blue_screen
+
+    ADD             ESP, 4
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+
+    IRET
+
+
+[GLOBAL INT28Handler]
+INT28Handler:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    PUSH dword      28
+
+    CALL            blue_screen
+
+    ADD             ESP, 4
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+
+    IRET
+
+
+[GLOBAL INT29Handler]
+INT29Handler:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    PUSH dword      29
+
+    CALL            blue_screen
+
+    ADD             ESP, 4
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+
+    IRET
+
+
+[GLOBAL INT30Handler]
+INT30Handler:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    PUSH dword      30
+
+    CALL            blue_screen
+
+    ADD             ESP, 4
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+
+    IRET
+
+
+[GLOBAL INT31Handler]
+INT31Handler:
+    PUSHAD
+    PUSH            DS
+    PUSH            ES
+    PUSH            FS
+    PUSH            GS
+
+    PUSH dword      31
+
+    CALL            blue_screen
+
+    ADD             ESP, 4
+
+    MOV             AL, EOI
+    OUT             PIC_MASTER_CODE, AL
+    OUT             PIC_SLAVE_CODE, AL
+
+    POP             GS
+    POP             FS
+    POP             ES
+    POP             DS
+
+    IRET
+
+
+[SEGMENT .data]
+
+idtr:
+                    dw IDT_SIZE - 1
+                    dd IDT_BASE
+
+idt:
+
+defaultIRQ
+.offset_low
+                    dw 0                ; low offset address of ISR
+                    dw CODE_SEL         ; Code selector
+                    dw PRESENT_RING0    ; IRQ present, ring 0
+.offset_high
+                    dw 0                ; high offset of address of ISR
+
+timerIRQ
+.offset_low
+                    dw 0
+                    dw CODE_SEL
+                    dw PRESENT_RING0
+.offset_high
+                    dw 0
+
+keyboardIRQ
+.offset_low
+                    dw 0
+                    dw CODE_SEL
+                    dw PRESENT_RING0
+.offset_high        
+                    dw 0
+
+idt_end:
+
+
